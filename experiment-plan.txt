@@ -1,0 +1,22 @@
+Train a small model on a small set of text
+
+Define a simple quality metric - pref a scalar of some sort
+
+Test different tokenisers to see what effects they have on the quality metric
+
+Inject precomputed understanding in an otherwise unpretrained tokeniser
+ - negation
+ - some other unary operators
+   - clause level
+   - local scope
+ - binary operators (preps)
+ - auxiliaries
+
+Inject clause level RI vectors for certain feats
+ - negation
+ - direct quotes
+ - hedges
+ - advs of various sorts
+
+Test all those against the above quality metric to see how many epochs are needed to attain a predetermined quality level
+
