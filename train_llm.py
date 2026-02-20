@@ -6,7 +6,7 @@ Can run on CPU or modest GPU.
 
 debug = True
 monitor = True
-experiment_label="4"
+experiment_label="5"
 inputtxt = "alice.txt"
 
 
@@ -108,9 +108,28 @@ class TransformerBlock(nn.Module):
 
 
 class SmallLLM(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, embedding_transform=None):
+        """Initialize the model.
+
+        Args:
+            config: ModelConfig with model hyperparameters
+            embedding_transform: Optional callable that transforms embeddings.
+                                 Signature: (embeddings, model) -> transformed_embeddings
+                                 where embeddings has shape (batch, seq_len, n_embd)
+
+
+        """
+
+#  Pass a custom function when creating the model:
+#  def my_transform(embeddings, model):
+#      # embeddings shape: (batch, seq_len, n_embd)
+#      return embeddings * 2  # Example: scale embeddings
+#
+#  model = SmallLLM(config, embedding_transform=my_transform)
+
         super().__init__()
         self.config = config
+        self.embedding_transform = embedding_transform
 
         # Token and position embeddings
         self.token_embedding = nn.Embedding(config.vocab_size, config.n_embd)
@@ -151,7 +170,13 @@ class SmallLLM(nn.Module):
         tok_emb = self.token_embedding(idx)
         pos = torch.arange(0, T, dtype=torch.long, device=idx.device).unsqueeze(0)
         pos_emb = self.position_embedding(pos)
-        x = self.dropout(tok_emb + pos_emb)
+        x = tok_emb + pos_emb
+
+        # Apply custom embedding transformation if provided
+        if self.embedding_transform is not None:
+            x = self.embedding_transform(x, self)
+
+        x = self.dropout(x)
 
         # Transformer blocks
         for block in self.blocks:
@@ -166,6 +191,32 @@ class SmallLLM(nn.Module):
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
 
         return logits, loss
+
+    def get_encoding(self, idx):
+        """Get the encoded representation of input tokens (before lm_head projection).
+
+        Args:
+            idx: Input token indices, shape (batch, seq_len)
+
+        Returns:
+            Encoded representation, shape (batch, seq_len, n_embd)
+        """
+        B, T = idx.size()
+
+        tok_emb = self.token_embedding(idx)
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device).unsqueeze(0)
+        pos_emb = self.position_embedding(pos)
+        x = tok_emb + pos_emb
+
+        if self.embedding_transform is not None:
+            x = self.embedding_transform(x, self)
+
+        x = self.dropout(x)
+
+        for block in self.blocks:
+            x = block(x)
+
+        return self.ln_f(x)
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
@@ -211,6 +262,38 @@ def estimate_loss(model, data, eval_iters, batch_size, context_length, device):
     return losses.mean()
 
 
+def save_qkv_weights(model, iteration, output_dir="qkv_snapshots"):
+    """Save QKV projection weights from all attention layers.
+
+    Args:
+        model: The SmallLLM model
+        iteration: Current training iteration
+        output_dir: Directory to save weight snapshots
+    """
+    import os
+    os.makedirs(output_dir, exist_ok=True)
+
+    qkv_data = {}
+    for layer_idx, block in enumerate(model.blocks):
+        qkv_weight = block.attn.qkv_proj.weight.data.cpu().clone()
+        n_embd = model.config.n_embd
+        # Split into Q, K, V components
+        q_weight, k_weight, v_weight = qkv_weight.split(n_embd, dim=0)
+        qkv_data[f'layer_{layer_idx}'] = {
+            'q': q_weight,
+            'k': k_weight,
+            'v': v_weight,
+            'qkv_combined': qkv_weight
+        }
+
+    snapshot_path = os.path.join(output_dir, f"qkv_iter_{iteration}.pt")
+    torch.save({
+        'iteration': iteration,
+        'qkv_weights': qkv_data
+    }, snapshot_path)
+    logger(f"Saved QKV weights snapshot to {snapshot_path}", monitor)
+
+
 def train(
     model,
     train_data,
@@ -221,9 +304,14 @@ def train(
     eval_interval=500,
     eval_iters=100,
     device='cpu',
-    experiment_label="0"
+    experiment_label="0",
+    track_qkv=False
 ):
-    """Training loop"""
+    """Training loop
+
+    Args:
+        track_qkv: If True, save QKV weight snapshots at each eval_interval
+    """
     logger(f"Training on {device}...", monitor)
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
@@ -244,6 +332,10 @@ def train(
                 best_val_loss = val_loss
                 torch.save(model.state_dict(), f"best_model_{experiment_label}.pt")
                 logger(f"Saved new best model (val loss: {val_loss:.4f})", monitor)
+
+            # Track QKV weights evolution
+            if track_qkv:
+                save_qkv_weights(model, iter, output_dir=f"qkv_snapshots_{experiment_label}")
 
         # Training step
         X, Y = get_batch(train_data, batch_size, model.config.context_length, device)
@@ -285,8 +377,8 @@ def main():
 
     # tokenizer = CharacterTokenizer(text)
     # tokenizer = WordTokenizer(text) # 3
-    tokenizer = BPETokenizer.train([text], vocab_size=1000) # 4
-    # tokenizer = BPETokenizer.from_pretrained("gpt2") # 5
+    # tokenizer = BPETokenizer.train([text], vocab_size=1000) # 4
+    tokenizer = BPETokenizer.from_pretrained("gpt2") # 5
     logger(f"Tokeniser: {tokenizer}", monitor)
 
     vocab_size = tokenizer.vocab_size
