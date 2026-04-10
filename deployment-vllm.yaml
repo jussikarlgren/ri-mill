@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poro2-vllm-deployment
+  namespace: silo-gen-models
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: poro2-vllm-api
+  template:
+    metadata:
+      labels:
+        app: poro2-vllm-api
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: "kubernetes.io/hostname"
+                operator: "NotIn"
+                values:
+                - "banff-ccs-aus-g16-38"
+                - "banff-sc-cs47-05"
+      containers:
+      - name: vllm-server
+        image: rocm/vllm:latest
+        command:
+        - "python"
+        - "-m"
+        - "vllm.entrypoints.openai.api_server"
+        - "--model"
+        - "LumiOpen/Llama-Poro-2-70B-Instruct"
+        - "--host"
+        - "0.0.0.0"
+        - "--port"
+        - "8000"
+        - "--tensor-parallel-size"
+        - "2"
+        - "--max-model-len"
+        - "8192"  # Model supports up to 8192 tokens
+        - "--gpu-memory-utilization"
+        - "0.9"
+        ports:
+        - containerPort: 8000
+          name: http
+        resources:
+          requests:
+            amd.com/gpu: 2
+            ephemeral-storage: "128Gi"
+          limits:
+            amd.com/gpu: 2
+            ephemeral-storage: "256Gi"
+        volumeMounts:
+            # vLLM needs to access the host's shared memory for tensor parallel inference:
+            - mountPath: /dev/shm
+              name: shm
+      volumes:
+        - emptyDir:
+            medium: Memory
+            sizeLimit: 32Gi
+          name: shm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: poro2-vllm-service
+  namespace: silo-gen-models
+spec:
+  selector:
+    app: poro2-vllm-api
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+  type: ClusterIP
