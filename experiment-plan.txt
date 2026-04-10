@@ -1,0 +1,33 @@
+Train a small model on a small set of text
+
+Define a simple quality metric - pref a scalar of some sort
+    - tomato test?
+    - animacy ranker?
+    - sentence similarity score?
+    - MS Marco?
+    
+
+Test different tokenisers to see what effects they have on the quality metric
+
+Inject precomputed understanding in an otherwise unpretrained tokeniser
+ - negation
+ - some other unary operators
+   - clause level
+   - local scope
+ - binary operators (preps)
+ - auxiliaries
+ - TMA
+ - Semantic Roles
+ "Understanding" is here to be operationalised by e.g. making prepositions like each other by adding a specific random pattern to them.
+ Also, adding a pattern to every token in a clause for marked cases such as negation, other clause-level operators, and for TMA information.
+ Animacy, as well.
+
+
+Inject clause level RI vectors for certain feats
+ - negation
+ - direct quotes
+ - hedges
+ - advs of various sorts
+
+Test all those against the above quality metric to see how many epochs are needed to attain a predetermined quality level
+

@@ -1,0 +1,173 @@
+o ahead, I'm listening.
+
+❯ Actually, three. First: I want to modify the input embeddings that the model uses to train. After encoding using
+  the tokeniser, the tokens are turned into embeddings or vectors somehow. Where in the code does that happen?
+  Second: how do can I inspect the resulting vector representation of an utterance in the model? If I train a
+  model, how can I track the evolution of the representation for a token in the KQV matrices over the training
+  process? Third: When I process a text using a trained model, how can I retrieve the encoded representation of
+  that text?
+
+● These are great questions about the model internals. Let me find the relevant code sections.
+
+● Read 1 file (ctrl+o to expand)
+
+● Here are the answers to your three questions:
+
+  ---
+  1. Where are input embeddings created?
+
+  The embeddings are created in the SmallLLM class at lines 116-117:
+
+  self.token_embedding = nn.Embedding(config.vocab_size, config.n_embd)  # line 116
+  self.position_embedding = nn.Embedding(config.context_length, config.n_embd)  # line 117
+
+  And they're applied in the forward method at lines 150-154:
+
+  tok_emb = self.token_embedding(idx)      # Convert token IDs → vectors
+  pos_emb = self.position_embedding(pos)   # Add positional info
+  x = self.dropout(tok_emb + pos_emb)      # Combined embedding
+
+  To modify embeddings, you'd change the nn.Embedding layers or add transformations after line 154.
+
+  ---
+  2. How to track KQV matrix evolution during training?
+
+  The Q, K, V projections happen in MultiHeadAttention at line 43:
+
+  self.qkv_proj = nn.Linear(config.n_embd, 3 * config.n_embd, bias=config.bias)
+
+  And split at lines 57-58:
+
+  qkv = self.qkv_proj(x)
+  q, k, v = qkv.split(self.n_embd, dim=2)
+
+  To track evolution, you could add a logging hook in the training loop (around line 254). For example:
+
+  # After each training step, log the QKV weights
+  if iter % eval_interval == 0:
+      for i, block in enumerate(model.blocks):
+          qkv_weights = block.attn.qkv_proj.weight.data.clone()
+          torch.save(qkv_weights, f"qkv_layer{i}_iter{iter}.pt")
+
+  ---
+  3. How to retrieve encoded representations of text?
+
+  The encoded representation (after all transformer blocks, before the final projection) is at line 160:
+
+  x = self.ln_f(x)  # This is your encoded representation
+
+  To extract it, modify the forward method or create a helper:
+
+  def get_encoding(self, idx):
+      B, T = idx.size()
+      tok_emb = self.token_embedding(idx)
+      pos = torch.arange(0, T, dtype=torch.long, device=idx.device).unsqueeze(0)
+      pos_emb = self.position_embedding(pos)
+      x = self.dropout(tok_emb + pos_emb)
+
+      for block in self.blocks:
+          x = block(x)
+
+      return self.ln_f(x)  # Shape: (batch, seq_len, n_embd)
+
+  Then use it:
+  tokens = torch.tensor([encode("Hello world")], device=device)
+  encoding = model.get_encoding(tokens)  # (1, seq_len, 128)
+
+  Would you like me to implement any of these modifications?
+
+✻ Crunched for 19m 46s
+
+❯ yes go ahead, implement all of them
+
+● I'll implement all three modifications. Let me create tasks to track the work and then make the changes.
+
+● Update(train_llm.py)
+  ⎿  Added 21 lines
+      167
+      168          return logits, loss
+      169
+      170 +    def get_encoding(self, idx):
+      171 +        """Get the encoded representation of input tokens (before lm_head projection).
+      172 +
+      173 +        Args:
+      174 +            idx: Input token indices, shape (batch, seq_len)
+      175 +
+      176 +        Returns:
+      177 +            Encoded representation, shape (batch, seq_len, n_embd)
+      178 +        """
+      179 +        B, T = idx.size()
+      180 +
+      181 +        tok_emb = self.token_embedding(idx)
+      182 +        pos = torch.arange(0, T, dtype=torch.long, device=idx.device).unsqueeze(0)
+      183 +        pos_emb = self.position_embedding(pos)
+      184 +        x = self.dropout(tok_emb + pos_emb)
+      185 +
+      186 +        for block in self.blocks:
+      187 +            x = block(x)
+      188 +
+      189 +        return self.ln_f(x)
+      190 +
+      191      @torch.no_grad()
+      192      def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+      193          """Generate new tokens autoregressively"""
+
+● Now let me add the embedding transformation hook:
+
+● Update(train_llm.py)
+  ⎿  Added 10 lines, removed 1 line
+      108
+      109
+      110  class SmallLLM(nn.Module):
+      111 -    def __init__(self, config):
+      111 +    def __init__(self, config, embedding_transform=None):
+      112 +        """Initialize the model.
+      113 +
+      114 +        Args:
+      115 +            config: ModelConfig with model hyperparameters
+      116 +            embedding_transform: Optional callable that transforms embeddings.
+      117 +                                 Signature: (embeddings, model) -> transformed_embeddings
+      118 +                                 where embeddings has shape (batch, seq_len, n_embd)
+      119 +        """
+      120          super().__init__()
+      121          self.config = config
+      122 +        self.embedding_transform = embedding_transform
+      123
+      124          # Token and position embeddings
+      125          self.token_embedding = nn.Embedding(config.vocab_size, config.n_embd)
+
+● Now update the forward method to use the embedding transform:
+
+● Update(train_llm.py)
+
+  3 tasks (1 done, 1 in progress, 1 open) · ctrl+t to hide tasks
+  ◼ Add embedding transformation hook
+  ◻ Add KQV weight tracking during training
+  ✔ Add get_encoding method to SmallLLM
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Edit file
+ train_llm.py
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 160          tok_emb = self.token_embedding(idx)
+ 161          pos = torch.arange(0, T, dtype=torch.long, device=idx.device).unsqueeze(0)
+ 162          pos_emb = self.position_embedding(pos)
+ 163 -        x = self.dropout(tok_emb + pos_emb)
+ 163 +        x = tok_emb + pos_emb
+ 164
+ 165 +        # Apply custom embedding transformation if provided
+ 166 +        if self.embedding_transform is not None:
+ 167 +            x = self.embedding_transform(x, self)
+ 168 +
+ 169 +        x = self.dropout(x)
+ 170 +
+ 171          # Transformer blocks
+ 172          for block in self.blocks:
+ 173              x = block(x)
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to make this edit to train_llm.py?
+   1. Yes
+ ❯ 2. Yes, allow all edits during this session (shift+tab)
+   3. No
+
+ Esc to cancel
